@@ -6,8 +6,8 @@
  *       situations.  In this implementation, the packet format is laid out as 
  *       the following:
  *       
- *       |<-  1 byte  ->|<-             the rest            ->|
- *       | payload size |<-             payload             ->|
+ *       |<-  1 byte  ->|<-       1 byte       ->|<-  3 byte  ->|<-             the rest            ->|
+ *       | payload size |<- payload seq number ->|<- checksum ->|<-             payload             ->|
  *
  *       The first byte of each packet indicates the size of the payload
  *       (excluding this single-byte header)
@@ -21,6 +21,25 @@
 #include "rdt_struct.h"
 #include "rdt_receiver.h"
 
+static int Receiver_Seq_Num = 0;
+
+bool checksum(struct packet *pkt, int header_size) {
+    int checksum = pkt->data[4] + pkt->data[3] * 10 + pkt->data[2] * 100;
+    int seq_num = pkt->data[1];
+    int realsum = 0;
+    for(int i = header_size;i < pkt->data[0] + header_size;++ i) {
+        realsum += pkt->data[i];
+    }
+    realsum %= 1000;
+    // return checksum == realsum && seq_num == Receiver_Seq_Num;
+    return checksum == realsum;
+}
+
+void Send_Ack() {
+    packet ack_pkt;
+    ack_pkt.data[0] = Receiver_Seq_Num;
+    Receiver_ToLowerLayer(&ack_pkt);
+}
 
 /* receiver initialization, called once at the very beginning */
 void Receiver_Init()
@@ -41,8 +60,8 @@ void Receiver_Final()
    receiver */
 void Receiver_FromLowerLayer(struct packet *pkt)
 {
-    /* 1-byte header indicating the size of the payload */
-    int header_size = 1;
+    /* 5-byte header indicating the size of the payload, seq number and checksum */
+    int header_size = 5;
 
     /* construct a message and deliver to the upper layer */
     struct message *msg = (struct message*) malloc(sizeof(struct message));
@@ -54,10 +73,14 @@ void Receiver_FromLowerLayer(struct packet *pkt)
     if (msg->size<0) msg->size=0;
     if (msg->size>RDT_PKTSIZE-header_size) msg->size=RDT_PKTSIZE-header_size;
 
-    msg->data = (char*) malloc(msg->size);
-    ASSERT(msg->data!=NULL);
-    memcpy(msg->data, pkt->data+header_size, msg->size);
-    Receiver_ToUpperLayer(msg);
+    if(checksum(pkt, header_size)) {
+        msg->data = (char*) malloc(msg->size);
+        ASSERT(msg->data!=NULL);
+        memcpy(msg->data, pkt->data+header_size, msg->size);
+        Receiver_ToUpperLayer(msg);
+        ++ Receiver_Seq_Num;
+        Send_Ack();
+    }
 
     /* don't forget to free the space */
     if (msg->data!=NULL) free(msg->data);
